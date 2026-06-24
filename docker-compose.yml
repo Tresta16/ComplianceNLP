@@ -1,0 +1,206 @@
+services:
+  compliancenlp-serving:
+    build:
+      context: .
+      dockerfile: Dockerfile.serving
+    image: compliancenlp:latest
+    container_name: compliancenlp-serving
+    depends_on:
+      neo4j:
+        condition: service_healthy
+    environment:
+      COMPLIANCENLP_ENABLE_KG: "true"
+      COMPLIANCENLP_REQUIRE_KG: "true"
+      COMPLIANCENLP_ENABLE_RETRIEVER: "true"
+      COMPLIANCENLP_REQUIRE_RETRIEVER: "false"
+      COMPLIANCENLP_REQUIRE_MODELS: "false"
+      COMPLIANCENLP_NEO4J_URI: "bolt://neo4j:7687"
+      COMPLIANCENLP_NEO4J_USER: "neo4j"
+      COMPLIANCENLP_NEO4J_PASSWORD: "${NEO4J_PASSWORD:-compliancenlp-local-password}"
+      COMPLIANCENLP_DENSE_MODEL: "${COMPLIANCENLP_DENSE_MODEL:-all-MiniLM-L6-v2}"
+    ports:
+      - "${COMPLIANCENLP_PORT:-8080}:8080"
+    volumes:
+      - model_cache:/app/.cache
+      - ./outputs:/app/outputs:ro
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8080/ready')",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 90s
+    restart: unless-stopped
+
+  kg-builder:
+    profiles: ["ingestion"]
+    build:
+      context: .
+      dockerfile: Dockerfile.training
+    image: compliancenlp-training:latest
+    depends_on:
+      neo4j:
+        condition: service_healthy
+    environment:
+      COMPLIANCENLP_NEO4J_URI: "bolt://neo4j:7687"
+      COMPLIANCENLP_NEO4J_USER: "neo4j"
+      COMPLIANCENLP_NEO4J_PASSWORD: "${NEO4J_PASSWORD:-compliancenlp-local-password}"
+    volumes:
+      - ./data:/app/data
+      - ./outputs:/app/outputs
+      - model_cache:/app/.cache
+    command:
+      [
+        "python",
+        "scripts/build_knowledge_graph.py",
+        "--sec-dir",
+        "/app/data/sec_edgar",
+        "--mifid-dir",
+        "/app/data/eurlex",
+        "--basel-dir",
+        "/app/data/bis_pdf",
+        "--output-dir",
+        "/app/outputs/knowledge_graph",
+        "--neo4j-uri",
+        "bolt://neo4j:7687",
+        "--neo4j-user",
+        "neo4j",
+        "--neo4j-password",
+        "${NEO4J_PASSWORD:-compliancenlp-local-password}",
+      ]
+
+  extraction-trainer:
+    profiles: ["train-extraction"]
+    build:
+      context: .
+      dockerfile: Dockerfile.training
+    image: compliancenlp-training:latest
+    environment:
+      WANDB_MODE: "${WANDB_MODE:-offline}"
+    volumes:
+      - ./data:/app/data
+      - ./outputs:/app/outputs
+      - model_cache:/app/.cache
+    command:
+      [
+        "python",
+        "scripts/train_extraction.py",
+        "--config",
+        "/app/configs/extraction.yaml",
+        "--data-dir",
+        "/app/data/regobligation",
+        "--output-dir",
+        "/app/outputs/extraction_model",
+      ]
+
+  gap-trainer:
+    profiles: ["train-gap"]
+    build:
+      context: .
+      dockerfile: Dockerfile.training
+    image: compliancenlp-training:latest
+    environment:
+      WANDB_MODE: "${WANDB_MODE:-offline}"
+    volumes:
+      - ./data:/app/data
+      - ./outputs:/app/outputs
+      - model_cache:/app/.cache
+    command:
+      [
+        "python",
+        "scripts/train_gap_analysis.py",
+        "--config",
+        "/app/configs/distillation.yaml",
+        "--data-dir",
+        "/app/data/compliance_instructions",
+        "--output-dir",
+        "/app/outputs/distilled_model",
+      ]
+
+  medusa-trainer:
+    profiles: ["train-medusa"]
+    build:
+      context: .
+      dockerfile: Dockerfile.training
+    image: compliancenlp-training:latest
+    environment:
+      WANDB_MODE: "${WANDB_MODE:-offline}"
+    volumes:
+      - ./data:/app/data
+      - ./outputs:/app/outputs
+      - model_cache:/app/.cache
+    command:
+      [
+        "python",
+        "scripts/train_medusa.py",
+        "--config",
+        "/app/configs/medusa.yaml",
+        "--base-model",
+        "/app/outputs/distilled_model",
+        "--data-dir",
+        "/app/data/regulatory_corpus",
+        "--output-dir",
+        "/app/outputs/medusa_model",
+      ]
+
+  evaluator:
+    profiles: ["evaluation"]
+    build:
+      context: .
+      dockerfile: Dockerfile.training
+    image: compliancenlp-training:latest
+    volumes:
+      - ./data:/app/data
+      - ./outputs:/app/outputs
+      - model_cache:/app/.cache
+    command:
+      [
+        "python",
+        "scripts/evaluate.py",
+        "--config",
+        "/app/configs/gap_analysis.yaml",
+        "--extraction-model",
+        "/app/outputs/extraction_model/best_model",
+        "--gap-model",
+        "/app/outputs/distilled_model",
+        "--data-dir",
+        "/app/data",
+        "--output-dir",
+        "/app/outputs/evaluation",
+      ]
+
+  neo4j:
+    image: neo4j:5-community
+    container_name: compliancenlp-neo4j
+    environment:
+      NEO4J_AUTH: "neo4j/${NEO4J_PASSWORD:-compliancenlp-local-password}"
+      NEO4J_server_memory_heap_initial__size: "${NEO4J_HEAP_INITIAL:-1G}"
+      NEO4J_server_memory_heap_max__size: "${NEO4J_HEAP_MAX:-2G}"
+      NEO4J_server_memory_pagecache_size: "${NEO4J_PAGECACHE:-1G}"
+    ports:
+      - "${NEO4J_HTTP_PORT:-7474}:7474"
+      - "${NEO4J_BOLT_PORT:-7687}:7687"
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "cypher-shell -u neo4j -p '${NEO4J_PASSWORD:-compliancenlp-local-password}' 'RETURN 1'",
+        ]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+    restart: unless-stopped
+
+volumes:
+  model_cache:
+  neo4j_data:
+  neo4j_logs:

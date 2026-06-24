@@ -13,6 +13,7 @@ Usage:
 from __future__ import annotations
 
 import logging
+import os
 import time
 from contextlib import asynccontextmanager
 from typing import Any
@@ -100,8 +101,21 @@ class HealthResponse(BaseModel):
     status: str
     extraction_model_loaded: bool
     gap_model_loaded: bool
+    kg_enabled: bool
+    kg_connected: bool
+    retriever_configured: bool
     gpu_available: bool
     version: str
+
+
+class ReadinessResponse(BaseModel):
+    """Readiness check response."""
+
+    status: str
+    extraction_model_loaded: bool
+    gap_model_loaded: bool
+    kg_connected: bool
+    retriever_configured: bool
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -111,10 +125,135 @@ class ModelState:
     extraction_model: Any = None
     gap_model: Any = None
     retriever: Any = None
+    kg_engine: Any = None
+    is_kg_enabled: bool = False
+    is_kg_connected: bool = False
+    is_retriever_configured: bool = False
     device: torch.device = torch.device("cpu")
 
 
 state = ModelState()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Runtime Configuration
+# ─────────────────────────────────────────────────────────────────────────────
+def _get_bool_env(name: str, default: bool = False) -> bool:
+    """Read a boolean environment variable.
+
+    Args:
+        name: Environment variable name.
+        default: Value used when the variable is not set.
+
+    Returns:
+        Parsed boolean value.
+
+    Raises:
+        ValueError: If the value is not a recognized boolean string.
+    """
+    value = os.getenv(name)
+    if value is None:
+        return default
+
+    normalized_value = value.strip().lower()
+    if normalized_value in {"1", "true", "yes", "on"}:
+        return True
+    if normalized_value in {"0", "false", "no", "off"}:
+        return False
+
+    raise ValueError(f"Invalid boolean environment variable {name}={value!r}")
+
+
+def _initialize_kg_engine() -> None:
+    """Initialize the Neo4j-backed KG query engine when enabled.
+
+    Raises:
+        RuntimeError: If KG is required but cannot be connected.
+    """
+    state.is_kg_enabled = _get_bool_env("COMPLIANCENLP_ENABLE_KG", default=False)
+    if not state.is_kg_enabled:
+        log.info("KG query engine disabled")
+        return
+
+    neo4j_uri = os.getenv("COMPLIANCENLP_NEO4J_URI", "bolt://localhost:7687")
+    neo4j_user = os.getenv("COMPLIANCENLP_NEO4J_USER", "neo4j")
+    neo4j_password = os.getenv("COMPLIANCENLP_NEO4J_PASSWORD", "")
+    max_hops = int(os.getenv("COMPLIANCENLP_KG_MAX_HOPS", "3"))
+
+    try:
+        from compliance_nlp.knowledge_graph.query import KGQueryEngine
+
+        # 这里主动验证连接，避免服务启动后第一次请求才暴露 Neo4j 配置错误。
+        state.kg_engine = KGQueryEngine(
+            neo4j_uri=neo4j_uri,
+            neo4j_user=neo4j_user,
+            neo4j_password=neo4j_password,
+            max_hops=max_hops,
+        )
+        state.kg_engine.driver.verify_connectivity()
+        state.is_kg_connected = True
+        log.info("Connected to Neo4j KG at %s", neo4j_uri)
+    except Exception as error:
+        state.kg_engine = None
+        state.is_kg_connected = False
+        log.exception("Failed to initialize KG query engine")
+
+        if _get_bool_env("COMPLIANCENLP_REQUIRE_KG", default=False):
+            raise RuntimeError("KG query engine is required but unavailable") from error
+
+
+def _initialize_retriever() -> None:
+    """Initialize the hybrid retriever shell when enabled.
+
+    The retriever still needs indexed corpus data before real retrieval can run.
+    This initialization only proves that serving dependencies are importable.
+    """
+    if not _get_bool_env("COMPLIANCENLP_ENABLE_RETRIEVER", default=False):
+        log.info("Hybrid retriever disabled")
+        return
+
+    dense_model_name = os.getenv("COMPLIANCENLP_DENSE_MODEL", "all-MiniLM-L6-v2")
+    top_k = int(os.getenv("COMPLIANCENLP_RETRIEVER_TOP_K", "5"))
+
+    try:
+        from compliance_nlp.retrieval.hybrid import HybridRetriever
+
+        # 这里不立即加载 sentence-transformer 模型，避免容器启动被大模型下载阻塞。
+        state.retriever = HybridRetriever(
+            dense_model_name=dense_model_name,
+            top_k=top_k,
+        )
+        state.is_retriever_configured = True
+        log.info("Hybrid retriever configured with dense model %s", dense_model_name)
+    except Exception as error:
+        state.retriever = None
+        state.is_retriever_configured = False
+        log.exception("Failed to initialize hybrid retriever")
+
+        if _get_bool_env("COMPLIANCENLP_REQUIRE_RETRIEVER", default=False):
+            raise RuntimeError("Hybrid retriever is required but unavailable") from error
+
+
+def _is_ready() -> bool:
+    """Determine whether required serving components are available.
+
+    Returns:
+        True when all configured required components are ready.
+    """
+    is_ready = True
+
+    if _get_bool_env("COMPLIANCENLP_REQUIRE_MODELS", default=False):
+        is_ready = is_ready and (
+            state.extraction_model is not None or state.gap_model is not None
+        )
+
+    if _get_bool_env("COMPLIANCENLP_REQUIRE_KG", default=False):
+        is_ready = is_ready and state.is_kg_connected
+
+    if _get_bool_env("COMPLIANCENLP_REQUIRE_RETRIEVER", default=False):
+        is_ready = is_ready and state.is_retriever_configured
+
+    return is_ready
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -129,14 +268,22 @@ async def lifespan(app: FastAPI):
     state.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     log.info(f"Using device: {state.device}")
 
-    # Models loaded on-demand or via config
+    _initialize_kg_engine()
+    _initialize_retriever()
+
+    # Models are still loaded on-demand or via future config wiring.
     log.info("Server ready for requests")
 
     yield
 
     log.info("Shutting down server...")
+    if state.kg_engine is not None:
+        state.kg_engine.close()
+        state.kg_engine = None
+        state.is_kg_connected = False
     state.extraction_model = None
     state.gap_model = None
+    state.retriever = None
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
@@ -166,17 +313,27 @@ async def health():
         status="healthy",
         extraction_model_loaded=state.extraction_model is not None,
         gap_model_loaded=state.gap_model is not None,
+        kg_enabled=state.is_kg_enabled,
+        kg_connected=state.is_kg_connected,
+        retriever_configured=state.is_retriever_configured,
         gpu_available=torch.cuda.is_available(),
         version="1.0.0",
     )
 
 
-@app.get("/ready")
+@app.get("/ready", response_model=ReadinessResponse)
 async def ready():
     """Readiness check for Kubernetes."""
-    if state.extraction_model is None and state.gap_model is None:
-        raise HTTPException(status_code=503, detail="Models not loaded")
-    return {"status": "ready"}
+    response = ReadinessResponse(
+        status="ready" if _is_ready() else "not_ready",
+        extraction_model_loaded=state.extraction_model is not None,
+        gap_model_loaded=state.gap_model is not None,
+        kg_connected=state.is_kg_connected,
+        retriever_configured=state.is_retriever_configured,
+    )
+    if not _is_ready():
+        raise HTTPException(status_code=503, detail=response.model_dump())
+    return response
 
 
 @app.get("/metrics")

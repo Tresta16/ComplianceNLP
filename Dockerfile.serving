@@ -16,7 +16,7 @@ COPY requirements-serving.txt .
 RUN pip install --no-cache-dir --target=/install -r requirements-serving.txt
 
 COPY src/ /build/src/
-COPY pyproject.toml ./
+COPY pyproject.toml README.md setup.py ./
 RUN pip install --no-cache-dir --target=/install .
 
 # Production stage
@@ -25,6 +25,8 @@ FROM nvidia/cuda:12.1-runtime-ubuntu22.04 AS production
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app \
+    XDG_CACHE_HOME=/app/.cache \
+    HF_HOME=/app/.cache/huggingface \
     PORT=8080
 
 WORKDIR /app
@@ -40,6 +42,7 @@ COPY --from=builder /install /usr/local/lib/python3.11/site-packages/
 COPY src/compliance_nlp/ /app/compliance_nlp/
 
 RUN useradd --create-home appuser
+RUN mkdir -p /app/.cache/huggingface && chown -R appuser:appuser /app/.cache
 USER appuser
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \

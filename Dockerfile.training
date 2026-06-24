@@ -1,0 +1,38 @@
+# ═══════════════════════════════════════════════════════════════════
+# Offline Training / Ingestion Dockerfile
+# Builds an image for fine-tuning, evaluation, and KG construction jobs.
+# ═══════════════════════════════════════════════════════════════════
+
+FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app/src \
+    XDG_CACHE_HOME=/app/.cache \
+    HF_HOME=/app/.cache/huggingface
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    git \
+    python3.11 \
+    python3.11-dev \
+    python3-pip \
+    python3.11-venv \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -s /usr/bin/python3.11 /usr/bin/python
+
+COPY requirements.txt requirements-training.txt pyproject.toml README.md setup.py ./
+COPY src/ /app/src/
+
+RUN python -m pip install --no-cache-dir --upgrade pip \
+    && python -m pip install --no-cache-dir -r requirements-training.txt \
+    && python -m pip install --no-cache-dir .
+
+COPY configs/ /app/configs/
+COPY scripts/ /app/scripts/
+
+RUN mkdir -p /app/.cache/huggingface /app/data /app/outputs
+
+CMD ["python", "scripts/evaluate.py", "--help"]
