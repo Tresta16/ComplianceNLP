@@ -20,12 +20,12 @@ docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
 Check service status:
 
 ```bash
-curl http://localhost:3000
+curl http://localhost:30020
 curl http://localhost:8080/health
 curl http://localhost:8080/ready
 ```
 
-The frontend is served on `http://localhost:3000` by default and proxies
+The frontend is served on `http://localhost:30020` by default and proxies
 `/health`, `/ready`, and `/api/*` requests to the FastAPI container.
 
 ## Knowledge Graph Ingestion

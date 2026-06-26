@@ -9,7 +9,7 @@ services:
       compliancenlp-serving:
         condition: service_healthy
     ports:
-      - "${FRONTEND_PORT:-3000}:80"
+      - "${FRONTEND_PORT:-30020}:80"
     restart: unless-stopped
 
   compliancenlp-serving:
