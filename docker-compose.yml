@@ -1,4 +1,17 @@
 services:
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    image: compliancenlp-frontend:latest
+    container_name: compliancenlp-frontend
+    depends_on:
+      compliancenlp-serving:
+        condition: service_healthy
+    ports:
+      - "${FRONTEND_PORT:-3000}:80"
+    restart: unless-stopped
+
   compliancenlp-serving:
     build:
       context: .
