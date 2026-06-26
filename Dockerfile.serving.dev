@@ -1,0 +1,23 @@
+# FastAPI development image.
+#
+# The source tree is mounted by docker-compose.dev.yml and uvicorn reloads the
+# application whenever Python files change.
+
+FROM python:3.11-slim AS development
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app/src \
+    XDG_CACHE_HOME=/app/.cache \
+    HF_HOME=/app/.cache/huggingface
+
+WORKDIR /app
+
+COPY requirements-serving.txt ./
+RUN pip install --no-cache-dir -r requirements-serving.txt
+
+RUN mkdir -p /app/src /app/outputs /app/.cache/huggingface
+
+EXPOSE 8080
+
+CMD ["python", "-m", "uvicorn", "compliance_nlp.serving.server:app", "--host", "0.0.0.0", "--port", "8080", "--reload", "--reload-dir", "/app/src"]

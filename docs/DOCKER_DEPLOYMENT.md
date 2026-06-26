@@ -28,6 +28,43 @@ curl http://localhost:8080/ready
 The frontend is served on `http://localhost:30020` by default and proxies
 `/health`, `/ready`, and `/api/*` requests to the FastAPI container.
 
+## Development With Live Reload
+
+Use the development override when you want frontend hot reload and backend
+auto-reload while keeping Neo4j and Docker networking the same:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+```
+
+Open the frontend at:
+
+```bash
+http://localhost:30020
+```
+
+In this mode:
+
+- React/Vite files under `frontend/` are bind-mounted into the frontend
+  container and update through Vite hot module replacement.
+- Python files under `src/` are bind-mounted into the serving container and
+  reload through `uvicorn --reload`.
+- You do not need `docker compose down && docker compose up` after each source
+  edit.
+
+If you only changed source files, keep the stack running. If you changed
+dependencies, Dockerfiles, or compose settings, rebuild the affected services:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build frontend compliancenlp-serving
+```
+
+Stop the development stack when you are done:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml down
+```
+
 ## Knowledge Graph Ingestion
 
 Place regulatory source files under:

@@ -1,0 +1,51 @@
+services:
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend.dev
+    image: compliancenlp-frontend-dev:latest
+    environment:
+      CHOKIDAR_USEPOLLING: "true"
+    volumes:
+      - ./frontend:/app
+      - frontend_node_modules:/app/node_modules
+    command:
+      [
+        "npm",
+        "run",
+        "dev",
+        "--",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "80",
+        "--config",
+        "vite.config.docker.ts",
+      ]
+
+  compliancenlp-serving:
+    build:
+      context: .
+      dockerfile: Dockerfile.serving.dev
+    image: compliancenlp-serving-dev:latest
+    volumes:
+      - ./src:/app/src
+      - ./outputs:/app/outputs:ro
+      - model_cache:/app/.cache
+    command:
+      [
+        "python",
+        "-m",
+        "uvicorn",
+        "compliance_nlp.serving.server:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8080",
+        "--reload",
+        "--reload-dir",
+        "/app/src",
+      ]
+
+volumes:
+  frontend_node_modules:

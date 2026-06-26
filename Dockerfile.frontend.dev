@@ -1,0 +1,17 @@
+# Frontend development image.
+#
+# This image keeps node_modules inside the container and lets docker-compose.dev.yml
+# mount the local frontend source over /app for Vite hot module replacement.
+
+FROM node:22-alpine AS development
+
+WORKDIR /app
+
+COPY frontend/package.json frontend/package-lock.json* ./
+RUN npm ci
+
+COPY frontend/ ./
+
+EXPOSE 80
+
+CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0", "--port", "80", "--config", "vite.config.docker.ts"]
